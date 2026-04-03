@@ -1,0 +1,400 @@
+let DAILY_SCHEDULE = [];
+let renderedNextEvents = [];
+let renderedScheduleRows = [];
+
+const state = {
+  dayOffset: 0,
+  compact: false,
+  filter: "all",
+  notifyLeadMin: 3,
+  soundEnabled: true,
+  alertsEnabled: false,
+  alertedKeys: new Set(),
+  lastTickMs: null
+};
+
+const refs = {
+  localClock: document.getElementById("localClock"),
+  serverClock: document.getElementById("serverClock"),
+  dayLabel: document.getElementById("dayLabel"),
+  dayDate: document.getElementById("dayDate"),
+  nextEvents: document.getElementById("nextEvents"),
+  scheduleList: document.getElementById("scheduleList"),
+  compactToggle: document.getElementById("compactToggle"),
+  soundToggle: document.getElementById("soundToggle"),
+  categoryFilter: document.getElementById("categoryFilter"),
+  notifyLeadMinutes: document.getElementById("notifyLeadMinutes"),
+  enableAlerts: document.getElementById("enableAlerts"),
+  prevDay: document.getElementById("prevDay"),
+  nextDay: document.getElementById("nextDay"),
+  jumpToday: document.getElementById("jumpToday")
+};
+
+function buildFilterOptions() {
+  refs.categoryFilter.innerHTML = '<option value="all">All events</option>';
+  const categories = [...new Set(DAILY_SCHEDULE.map((event) => event.category))].sort();
+  for (const category of categories) {
+    const option = document.createElement("option");
+    option.value = category;
+    option.textContent = category.replace(/-/g, " ");
+    refs.categoryFilter.appendChild(option);
+  }
+}
+
+function getBaseDate() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const copy = new Date(today);
+  copy.setDate(copy.getDate() + state.dayOffset);
+  return copy;
+}
+
+function parseTime(baseDate, hhmm) {
+  const [hours, minutes] = hhmm.split(":").map(Number);
+  const date = new Date(baseDate);
+  date.setHours(hours, minutes, 0, 0);
+  return date;
+}
+
+function flattenEvents(baseDate) {
+  const rows = DAILY_SCHEDULE.map((entry) => {
+    const start = parseTime(baseDate, entry.time);
+    const durationMin = Number(entry.durationMin) || 20;
+    const end = new Date(start.getTime() + durationMin * 60000);
+    return {
+      name: entry.name,
+      category: entry.category || "general",
+      start,
+      end,
+      durationMin,
+      hhmm: entry.time
+    };
+  });
+
+  rows.sort((a, b) => a.start - b.start || a.name.localeCompare(b.name));
+  return rows;
+}
+
+function eventKey(event) {
+  return `${event.name}|${event.category}|${event.start.getTime()}`;
+}
+
+function humanDuration(ms) {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const days = Math.floor(totalSec / 86400);
+  const hours = Math.floor((totalSec % 86400) / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  const secs = totalSec % 60;
+
+  if (days > 0) {
+    return `${days}d ${hours}h ${mins}m`;
+  }
+  if (hours > 0) {
+    return `${hours}h ${mins}m`;
+  }
+  if (mins > 0) {
+    return `${mins}m ${secs}s`;
+  }
+  return `${secs}s`;
+}
+
+function findNextEvents(now, limit = 6) {
+  const todayBase = new Date(now);
+  todayBase.setHours(0, 0, 0, 0);
+  const tomorrowBase = new Date(todayBase);
+  tomorrowBase.setDate(tomorrowBase.getDate() + 1);
+
+  const merged = flattenEvents(todayBase).concat(flattenEvents(tomorrowBase));
+  return merged.filter((event) => event.start >= now && eventMatchesFilter(event)).slice(0, limit);
+}
+
+function eventMatchesFilter(event) {
+  return state.filter === "all" || event.category === state.filter;
+}
+
+function formatClock(date, timeZone) {
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone
+  }).format(date);
+}
+
+function formatDay(date) {
+  return new Intl.DateTimeFormat("en-US", {
+    weekday: "long",
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  }).format(date);
+}
+
+function renderHeader(now) {
+  const base = getBaseDate();
+  refs.dayDate.textContent = formatDay(base);
+
+  if (state.dayOffset === 0) {
+    refs.dayLabel.textContent = "Today";
+  } else if (state.dayOffset > 0) {
+    refs.dayLabel.textContent = `+${state.dayOffset} day`;
+  } else {
+    refs.dayLabel.textContent = `${state.dayOffset} day`;
+  }
+
+  refs.localClock.textContent = formatClock(now, Intl.DateTimeFormat().resolvedOptions().timeZone);
+  refs.serverClock.textContent = formatClock(now, "Etc/GMT-2");
+}
+
+function renderNextEvents(now, force = false) {
+  const next = findNextEvents(now, 6);
+  const nextKey = next.map(eventKey).join("||");
+  const renderedKey = renderedNextEvents.map(eventKey).join("||");
+
+  if (force || nextKey !== renderedKey) {
+    refs.nextEvents.innerHTML = "";
+
+    for (const event of next) {
+      const card = document.createElement("article");
+      card.className = "timer-card";
+      card.innerHTML = `
+      <h4>${event.name}</h4>
+      <p class="timer-meta">${event.category.replace(/-/g, " ")} • starts at ${event.hhmm}</p>
+      <p class="timer-count"></p>
+    `;
+
+      refs.nextEvents.appendChild(card);
+    }
+  }
+
+  renderedNextEvents = next;
+  const cards = refs.nextEvents.querySelectorAll(".timer-card");
+  renderedNextEvents.forEach((event, idx) => {
+    const countEl = cards[idx]?.querySelector(".timer-count");
+    if (countEl) {
+      countEl.textContent = `In ${humanDuration(event.start - now)}`;
+    }
+  });
+}
+
+function renderSchedule(now, force = false) {
+  const base = getBaseDate();
+  const rows = flattenEvents(base).filter(eventMatchesFilter);
+  const rowsKey = rows.map(eventKey).join("||");
+  const renderedKey = renderedScheduleRows.map(eventKey).join("||");
+
+  refs.scheduleList.classList.toggle("compact", state.compact);
+
+  if (force || rowsKey !== renderedKey) {
+    refs.scheduleList.innerHTML = "";
+    for (const row of rows) {
+      const li = document.createElement("li");
+      li.className = "schedule-item";
+      li.innerHTML = `
+      <span class="time">${row.hhmm}</span>
+      <span class="name">${row.name}<span class="meta">${row.category.replace(/-/g, " ")}</span></span>
+      <span class="count"></span>
+    `;
+      refs.scheduleList.appendChild(li);
+    }
+  }
+
+  renderedScheduleRows = rows;
+  const rowEls = refs.scheduleList.querySelectorAll(".schedule-item");
+  renderedScheduleRows.forEach((row, idx) => {
+    const li = rowEls[idx];
+    if (!li) {
+      return;
+    }
+
+    const isTodayView = state.dayOffset === 0;
+    const isLive = isTodayView && now >= row.start && now < row.end;
+    li.classList.toggle("live", isLive);
+
+    let statusText = "Passed";
+    if (isLive) {
+      statusText = `Live (${humanDuration(row.end - now)} left)`;
+    } else if (row.start >= now || state.dayOffset !== 0) {
+      statusText = `In ${humanDuration(row.start - now)}`;
+    }
+
+    const countEl = li.querySelector(".count");
+    if (countEl) {
+      countEl.textContent = statusText;
+    }
+  });
+}
+
+function playAlertSound() {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) {
+    return;
+  }
+
+  const audioCtx = new Ctx();
+  const oscillator = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  oscillator.type = "triangle";
+  oscillator.frequency.setValueAtTime(880, audioCtx.currentTime);
+  gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.05, audioCtx.currentTime + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.35);
+  oscillator.connect(gain);
+  gain.connect(audioCtx.destination);
+  oscillator.start();
+  oscillator.stop(audioCtx.currentTime + 0.36);
+}
+
+function findUpcomingAllEvents(now, limit = 24) {
+  const todayBase = new Date(now);
+  todayBase.setHours(0, 0, 0, 0);
+  const tomorrowBase = new Date(todayBase);
+  tomorrowBase.setDate(tomorrowBase.getDate() + 1);
+
+  return flattenEvents(todayBase)
+    .concat(flattenEvents(tomorrowBase))
+    .filter((event) => event.start >= now)
+    .slice(0, limit);
+}
+
+function maybeNotify(now) {
+  if (state.dayOffset !== 0) {
+    state.lastTickMs = now.getTime();
+    return;
+  }
+
+  if (!state.alertsEnabled && !state.soundEnabled) {
+    state.lastTickMs = now.getTime();
+    return;
+  }
+
+  const leadWindowMs = state.notifyLeadMin * 60000;
+  const previousTickMs = state.lastTickMs ?? now.getTime() - 1100;
+  const upcoming = findUpcomingAllEvents(now, 24);
+
+  for (const event of upcoming) {
+    const prevUntil = event.start.getTime() - previousTickMs;
+    const currentUntil = event.start.getTime() - now.getTime();
+
+    const crossedLeadThreshold = prevUntil > leadWindowMs && currentUntil <= leadWindowMs && currentUntil > -5000;
+    if (crossedLeadThreshold) {
+      const key = `${event.name}:${event.start.getTime()}:${state.notifyLeadMin}`;
+      if (state.alertedKeys.has(key)) {
+        continue;
+      }
+      state.alertedKeys.add(key);
+
+      if (state.alertsEnabled && Notification.permission === "granted") {
+        new Notification("Event Alert", {
+          body: `${event.name} starts in ${state.notifyLeadMin} minute(s) at ${event.hhmm}`
+        });
+      }
+
+      if (state.soundEnabled) {
+        playAlertSound();
+      }
+    }
+  }
+
+  state.lastTickMs = now.getTime();
+}
+
+async function enableAlerts() {
+  if (!("Notification" in window)) {
+    refs.enableAlerts.textContent = "Alerts unsupported";
+    refs.enableAlerts.disabled = true;
+    return;
+  }
+
+  const permission = await Notification.requestPermission();
+  if (permission === "granted") {
+    state.alertsEnabled = true;
+    refs.enableAlerts.textContent = "Alerts enabled";
+    refs.enableAlerts.classList.add("active");
+  } else {
+    state.alertsEnabled = false;
+    refs.enableAlerts.textContent = "Allow alerts";
+    refs.enableAlerts.classList.remove("active");
+  }
+}
+
+async function loadScheduleJson() {
+  try {
+    const response = await fetch("schedule.json", { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error("Could not load schedule.json");
+    }
+    const data = await response.json();
+    if (!Array.isArray(data)) {
+      throw new Error("Invalid schedule.json format");
+    }
+    DAILY_SCHEDULE = data;
+  } catch (error) {
+    console.error(error);
+    refs.nextEvents.innerHTML = "<p class=\"muted\">Could not load schedule.json. Run from a local server and refresh.</p>";
+  }
+}
+
+function tick(force = false) {
+  if (!DAILY_SCHEDULE.length) {
+    return;
+  }
+  const now = new Date();
+  renderHeader(now);
+  renderNextEvents(now, force);
+  renderSchedule(now, force);
+  maybeNotify(now);
+}
+
+function bindEvents() {
+  refs.prevDay.addEventListener("click", () => {
+    state.dayOffset -= 1;
+    tick(true);
+  });
+
+  refs.nextDay.addEventListener("click", () => {
+    state.dayOffset += 1;
+    tick(true);
+  });
+
+  refs.jumpToday.addEventListener("click", () => {
+    state.dayOffset = 0;
+    tick(true);
+  });
+
+  refs.compactToggle.addEventListener("change", (event) => {
+    state.compact = event.target.checked;
+    tick(true);
+  });
+
+  refs.soundToggle.addEventListener("change", (event) => {
+    state.soundEnabled = event.target.checked;
+  });
+
+  refs.categoryFilter.addEventListener("change", (event) => {
+    state.filter = event.target.value;
+    tick(true);
+  });
+
+  refs.notifyLeadMinutes.addEventListener("change", (event) => {
+    state.notifyLeadMin = Number(event.target.value) || 3;
+  });
+
+  refs.enableAlerts.addEventListener("click", () => {
+    enableAlerts();
+  });
+}
+
+async function init() {
+  await loadScheduleJson();
+  if (!DAILY_SCHEDULE.length) {
+    return;
+  }
+  buildFilterOptions();
+  bindEvents();
+  tick(true);
+  setInterval(() => tick(false), 1000);
+}
+
+init();

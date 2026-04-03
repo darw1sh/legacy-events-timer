@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Event Timers</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Syne:wght@600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="bg-glow bg-glow-1" aria-hidden="true"></div>
+    <div class="bg-glow bg-glow-2" aria-hidden="true"></div>
+
+    <main class="app-shell">
+      <header class="topbar panel">
+        <div class="brand-wrap">
+          <p class="eyebrow">Live Schedule</p>
+          <h1>Event Timers</h1>
+          <p class="muted">Inspired by Sailor Timers</p>
+        </div>
+        <div class="clock-wrap">
+          <div class="clock-card">
+            <span class="clock-label">You</span>
+            <strong id="localClock">--:--:--</strong>
+          </div>
+          <div class="clock-card">
+            <span class="clock-label">Server (UTC+2)</span>
+            <strong id="serverClock">--:--:--</strong>
+          </div>
+        </div>
+      </header>
+
+      <section class="hero panel">
+        <div class="hero-head">
+          <h2>Next Big Timers</h2>
+          <p class="muted">Always sorted by soonest start.</p>
+        </div>
+        <div id="nextEvents" class="next-grid" aria-live="polite"></div>
+      </section>
+
+      <section class="panel">
+        <div class="day-nav">
+          <button id="prevDay" class="ghost-btn" type="button" aria-label="Previous day">
+            <span aria-hidden="true">&larr;</span>
+          </button>
+
+          <div class="day-display">
+            <p class="day-label" id="dayLabel">Today</p>
+            <h3 id="dayDate">---</h3>
+          </div>
+
+          <button id="nextDay" class="ghost-btn" type="button" aria-label="Next day">
+            <span aria-hidden="true">&rarr;</span>
+          </button>
+        </div>
+
+        <div class="toolbar">
+          <label class="checkbox-wrap" for="compactToggle">
+            <input type="checkbox" id="compactToggle" />
+            <span>Compact list</span>
+          </label>
+          <label class="select-wrap" for="categoryFilter">
+            <span>Filter</span>
+            <select id="categoryFilter">
+              <option value="all">All events</option>
+            </select>
+          </label>
+          <label class="select-wrap" for="notifyLeadMinutes">
+            <span>Alert lead</span>
+            <select id="notifyLeadMinutes">
+              <option value="1">1 min</option>
+              <option value="3" selected>3 min</option>
+              <option value="5">5 min</option>
+            </select>
+          </label>
+          <label class="checkbox-wrap" for="soundToggle">
+            <input type="checkbox" id="soundToggle" checked />
+            <span>Sound</span>
+          </label>
+          <button id="enableAlerts" class="solid-btn" type="button">Enable alerts</button>
+          <button id="jumpToday" class="solid-btn" type="button">Jump to today</button>
+        </div>
+
+        <div class="schedule-head">
+          <span>Time</span>
+          <span>Event</span>
+          <span>Starts In</span>
+        </div>
+        <ul id="scheduleList" class="schedule-list"></ul>
+      </section>
+
+      <footer class="footer muted">
+        <p>Client-side Sailor-style schedule with filters and notifications.</p>
+      </footer>
+    </main>
+
+    <script src="script.js"></script>
+  </body>
+</html>
