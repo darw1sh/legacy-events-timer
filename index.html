@@ -71,19 +71,24 @@
             </select>
           </label>
           <label class="select-wrap" for="notifyLeadMinutes">
-            <span>Alert lead</span>
+            <span>Voice lead</span>
             <select id="notifyLeadMinutes">
               <option value="1">1 min</option>
               <option value="3" selected>3 min</option>
               <option value="5">5 min</option>
             </select>
           </label>
-          <label class="checkbox-wrap" for="soundToggle">
-            <input type="checkbox" id="soundToggle" checked />
-            <span>Sound</span>
+          <label class="checkbox-wrap" for="voiceToggle">
+            <input type="checkbox" id="voiceToggle" checked />
+            <span>Voice</span>
           </label>
-          <button id="enableAlerts" class="solid-btn" type="button">Enable alerts</button>
+          <button id="testVoice" class="solid-btn" type="button">Test voice</button>
           <button id="jumpToday" class="solid-btn" type="button">Jump to today</button>
+        </div>
+
+        <div class="voice-panel">
+          <p class="voice-panel-title">Voice these events</p>
+          <div id="voiceEventList" class="voice-event-list"></div>
         </div>
 
         <div class="schedule-head">

@@ -7,8 +7,8 @@ const state = {
   compact: false,
   filter: "all",
   notifyLeadMin: 3,
-  soundEnabled: true,
-  alertsEnabled: false,
+  voiceEnabled: true,
+  voicedEvents: new Set(),
   alertedKeys: new Set(),
   lastTickMs: null
 };
@@ -21,10 +21,11 @@ const refs = {
   nextEvents: document.getElementById("nextEvents"),
   scheduleList: document.getElementById("scheduleList"),
   compactToggle: document.getElementById("compactToggle"),
-  soundToggle: document.getElementById("soundToggle"),
+  voiceToggle: document.getElementById("voiceToggle"),
+  testVoice: document.getElementById("testVoice"),
+  voiceEventList: document.getElementById("voiceEventList"),
   categoryFilter: document.getElementById("categoryFilter"),
   notifyLeadMinutes: document.getElementById("notifyLeadMinutes"),
-  enableAlerts: document.getElementById("enableAlerts"),
   prevDay: document.getElementById("prevDay"),
   nextDay: document.getElementById("nextDay"),
   jumpToday: document.getElementById("jumpToday")
@@ -39,6 +40,50 @@ function buildFilterOptions() {
     option.textContent = category.replace(/-/g, " ");
     refs.categoryFilter.appendChild(option);
   }
+}
+
+function buildVoiceEventChecklist() {
+  const names = [...new Set(DAILY_SCHEDULE.map((event) => event.name))].sort((a, b) =>
+    a.localeCompare(b)
+  );
+
+  if (!state.voicedEvents.size) {
+    state.voicedEvents = new Set(names);
+  }
+
+  refs.voiceEventList.innerHTML = "";
+
+  for (const name of names) {
+    const label = document.createElement("label");
+    label.className = "checkbox-wrap voice-event-item";
+
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = state.voicedEvents.has(name);
+    input.dataset.eventName = name;
+
+    input.addEventListener("change", (event) => {
+      if (event.target.checked) {
+        state.voicedEvents.add(name);
+      } else {
+        state.voicedEvents.delete(name);
+      }
+    });
+
+    const span = document.createElement("span");
+    span.textContent = name;
+
+    label.appendChild(input);
+    label.appendChild(span);
+    refs.voiceEventList.appendChild(label);
+  }
+}
+
+function setVoiceChecklistEnabled(enabled) {
+  const inputs = refs.voiceEventList.querySelectorAll('input[type="checkbox"]');
+  inputs.forEach((input) => {
+    input.disabled = !enabled;
+  });
 }
 
 function getBaseDate() {
@@ -226,24 +271,64 @@ function renderSchedule(now, force = false) {
   });
 }
 
-function playAlertSound() {
-  const Ctx = window.AudioContext || window.webkitAudioContext;
-  if (!Ctx) {
+function speakAlert(event, mode = "lead") {
+  if (!("speechSynthesis" in window)) {
     return;
   }
 
-  const audioCtx = new Ctx();
-  const oscillator = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-  oscillator.type = "triangle";
-  oscillator.frequency.setValueAtTime(880, audioCtx.currentTime);
-  gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.05, audioCtx.currentTime + 0.02);
-  gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.35);
-  oscillator.connect(gain);
-  gain.connect(audioCtx.destination);
-  oscillator.start();
-  oscillator.stop(audioCtx.currentTime + 0.36);
+  if (!state.voiceEnabled) {
+    return;
+  }
+
+  if (!state.voicedEvents.has(event.name)) {
+    return;
+  }
+
+  const message =
+    mode === "start"
+      ? `${event.name} is starting now.`
+      : `${event.name} starts in ${state.notifyLeadMin} minutes at ${event.hhmm}`;
+
+  const utterance = new SpeechSynthesisUtterance(message);
+  utterance.rate = 1;
+  utterance.pitch = 1;
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.speak(utterance);
+}
+
+function testVoice() {
+  if (!state.voiceEnabled) {
+    speakText("Voice is off. Turn it on to test the announcement.");
+    return;
+  }
+
+  const firstVoicedEventName = [...state.voicedEvents][0];
+  if (!firstVoicedEventName) {
+    speakText("No events are selected for voice.");
+    return;
+  }
+
+  const sampleEvent = DAILY_SCHEDULE.find((event) => event.name === firstVoicedEventName);
+  if (!sampleEvent) {
+    speakText("No matching event was found for the voice test.");
+    return;
+  }
+
+  speakText(
+    `${sampleEvent.name} starts in ${state.notifyLeadMin} minutes at ${sampleEvent.time}. Voice test.`
+  );
+}
+
+function speakText(message) {
+  if (!("speechSynthesis" in window)) {
+    return;
+  }
+
+  const utterance = new SpeechSynthesisUtterance(message);
+  utterance.rate = 1;
+  utterance.pitch = 1;
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.speak(utterance);
 }
 
 function findUpcomingAllEvents(now, limit = 24) {
@@ -264,7 +349,7 @@ function maybeNotify(now) {
     return;
   }
 
-  if (!state.alertsEnabled && !state.soundEnabled) {
+  if (!state.voiceEnabled) {
     state.lastTickMs = now.getTime();
     return;
   }
@@ -278,45 +363,19 @@ function maybeNotify(now) {
     const currentUntil = event.start.getTime() - now.getTime();
 
     const crossedLeadThreshold = prevUntil > leadWindowMs && currentUntil <= leadWindowMs && currentUntil > -5000;
+
     if (crossedLeadThreshold) {
-      const key = `${event.name}:${event.start.getTime()}:${state.notifyLeadMin}`;
-      if (state.alertedKeys.has(key)) {
+      const leadKey = `lead:${event.name}:${event.start.getTime()}:${state.notifyLeadMin}`;
+      if (state.alertedKeys.has(leadKey)) {
         continue;
       }
-      state.alertedKeys.add(key);
+      state.alertedKeys.add(leadKey);
 
-      if (state.alertsEnabled && Notification.permission === "granted") {
-        new Notification("Event Alert", {
-          body: `${event.name} starts in ${state.notifyLeadMin} minute(s) at ${event.hhmm}`
-        });
-      }
-
-      if (state.soundEnabled) {
-        playAlertSound();
-      }
+      speakAlert(event, "lead");
     }
   }
 
   state.lastTickMs = now.getTime();
-}
-
-async function enableAlerts() {
-  if (!("Notification" in window)) {
-    refs.enableAlerts.textContent = "Alerts unsupported";
-    refs.enableAlerts.disabled = true;
-    return;
-  }
-
-  const permission = await Notification.requestPermission();
-  if (permission === "granted") {
-    state.alertsEnabled = true;
-    refs.enableAlerts.textContent = "Alerts enabled";
-    refs.enableAlerts.classList.add("active");
-  } else {
-    state.alertsEnabled = false;
-    refs.enableAlerts.textContent = "Allow alerts";
-    refs.enableAlerts.classList.remove("active");
-  }
 }
 
 async function loadScheduleJson() {
@@ -368,8 +427,13 @@ function bindEvents() {
     tick(true);
   });
 
-  refs.soundToggle.addEventListener("change", (event) => {
-    state.soundEnabled = event.target.checked;
+  refs.voiceToggle.addEventListener("change", (event) => {
+    state.voiceEnabled = event.target.checked;
+    setVoiceChecklistEnabled(state.voiceEnabled);
+  });
+
+  refs.testVoice.addEventListener("click", () => {
+    testVoice();
   });
 
   refs.categoryFilter.addEventListener("change", (event) => {
@@ -380,10 +444,6 @@ function bindEvents() {
   refs.notifyLeadMinutes.addEventListener("change", (event) => {
     state.notifyLeadMin = Number(event.target.value) || 3;
   });
-
-  refs.enableAlerts.addEventListener("click", () => {
-    enableAlerts();
-  });
 }
 
 async function init() {
@@ -392,6 +452,8 @@ async function init() {
     return;
   }
   buildFilterOptions();
+  buildVoiceEventChecklist();
+  setVoiceChecklistEnabled(state.voiceEnabled);
   bindEvents();
   tick(true);
   setInterval(() => tick(false), 1000);
