@@ -355,6 +355,7 @@ function maybeNotify(now) {
   }
 
   const leadWindowMs = state.notifyLeadMin * 60000;
+  const lateGraceMs = 15000;
   const previousTickMs = state.lastTickMs ?? now.getTime() - 1100;
   const upcoming = findUpcomingAllEvents(now, 24);
 
@@ -362,7 +363,8 @@ function maybeNotify(now) {
     const prevUntil = event.start.getTime() - previousTickMs;
     const currentUntil = event.start.getTime() - now.getTime();
 
-    const crossedLeadThreshold = prevUntil > leadWindowMs && currentUntil <= leadWindowMs && currentUntil > -5000;
+    const crossedLeadThreshold =
+      prevUntil >= leadWindowMs && currentUntil <= leadWindowMs && currentUntil >= -lateGraceMs;
 
     if (crossedLeadThreshold) {
       const leadKey = `lead:${event.name}:${event.start.getTime()}:${state.notifyLeadMin}`;
