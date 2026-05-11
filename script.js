@@ -582,17 +582,16 @@ function maybeNotify(now) {
       speakAlert(event, "lead");
     }
 
-    // Check if event is starting now (crossed start threshold)
-    const crossedStartThreshold =
-      prevUntil > 0 && currentUntil <= startGraceMs && currentUntil >= -lateGraceMs;
+    // Check if event is starting now (within start grace window)
+    // More lenient: detect if we're close to start time and haven't announced yet
+    const isNearStart = currentUntil >= -lateGraceMs && currentUntil <= startGraceMs;
+    const startKey = `start:${event.name}:${event.start.getTime()}`;
+    const hasAlertedStart = state.alertedKeys.has(startKey);
+    const isEventSelected = state.voicedEvents.has(event.name);
 
-    if (crossedStartThreshold) {
-      const startKey = `start:${event.name}:${event.start.getTime()}`;
-      if (state.alertedKeys.has(startKey)) {
-        continue;
-      }
+    if (isNearStart && !hasAlertedStart && isEventSelected) {
+      console.log(`[Voice] Event near start: ${event.name}, currentUntil=${currentUntil}ms`);
       state.alertedKeys.add(startKey);
-
       speakAlert(event, "start");
     }
   }
