@@ -8,6 +8,7 @@ const state = {
   filter: "all",
   notifyLeadMin: 3,
   voiceEnabled: true,
+  bgAudioEnabled: false,
   voicedEvents: new Set(),
   alertedKeys: new Set(),
   lastTickMs: null
@@ -28,8 +29,102 @@ const refs = {
   notifyLeadMinutes: document.getElementById("notifyLeadMinutes"),
   prevDay: document.getElementById("prevDay"),
   nextDay: document.getElementById("nextDay"),
-  jumpToday: document.getElementById("jumpToday")
+  jumpToday: document.getElementById("jumpToday"),
+  enableAudioBtn: document.getElementById("enableAudioBtn")
 };
+
+// LocalStorage helpers for persisting user preferences
+const storage = {
+  VOICE_KEY: "eventTimers_voiceEnabled",
+  BG_AUDIO_KEY: "eventTimers_bgAudioEnabled",
+  
+  saveVoicePreference(enabled) {
+    try {
+      localStorage.setItem(this.VOICE_KEY, JSON.stringify(enabled));
+    } catch (e) {
+      console.warn("Failed to save voice preference", e);
+    }
+  },
+  
+  loadVoicePreference() {
+    try {
+      const saved = localStorage.getItem(this.VOICE_KEY);
+      return saved !== null ? JSON.parse(saved) : true;
+    } catch (e) {
+      console.warn("Failed to load voice preference", e);
+      return true;
+    }
+  },
+  
+  saveBgAudioPreference(enabled) {
+    try {
+      localStorage.setItem(this.BG_AUDIO_KEY, JSON.stringify(enabled));
+    } catch (e) {
+      console.warn("Failed to save bg audio preference", e);
+    }
+  },
+  
+  loadBgAudioPreference() {
+    try {
+      const saved = localStorage.getItem(this.BG_AUDIO_KEY);
+      return saved !== null ? JSON.parse(saved) : false;
+    } catch (e) {
+      console.warn("Failed to load bg audio preference", e);
+      return false;
+    }
+  }
+};
+
+
+// Background audio keeper: creates a very-low-volume oscillator to keep
+// the audio system active so timers/tts continue when page is backgrounded
+const bgAudio = {
+  ctx: null,
+  osc: null,
+  gain: null,
+  started: false,
+  start() {
+    try {
+      if (this.started) return;
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      this.ctx = new Ctx();
+      this.gain = this.ctx.createGain();
+      this.gain.gain.value = 0.00001;
+      this.osc = this.ctx.createOscillator();
+      this.osc.type = "sine";
+      this.osc.frequency.value = 440;
+      this.osc.connect(this.gain);
+      this.gain.connect(this.ctx.destination);
+      this.osc.start();
+      this.started = true;
+    } catch (e) {
+      console.warn("bgAudio start failed", e);
+    }
+  },
+  resume() {
+    try {
+      if (this.ctx && this.ctx.state === "suspended") {
+        this.ctx.resume();
+      }
+    } catch (e) {
+      console.warn("bgAudio resume failed", e);
+    }
+  }
+};
+
+// Ensure background audio is unlocked from a user gesture. Safe to call repeatedly.
+function ensureBackgroundAudioUnlocked() {
+  try {
+    if (!bgAudio.started) {
+      bgAudio.start();
+    } else {
+      bgAudio.resume();
+    }
+  } catch (e) {
+    console.warn("ensureBackgroundAudioUnlocked error", e);
+  }
+}
 
 function buildFilterOptions() {
   refs.categoryFilter.innerHTML = '<option value="all">All events</option>';
@@ -84,6 +179,74 @@ function setVoiceChecklistEnabled(enabled) {
   inputs.forEach((input) => {
     input.disabled = !enabled;
   });
+}
+
+// Convert a Date object (in local time) to server time (UTC+2)
+function toServerTime(localDate) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone: "Etc/GMT-2"
+  });
+  const parts = formatter.formatToParts(localDate);
+  const obj = {};
+  for (const { type, value } of parts) {
+    if (type !== "literal") {
+      obj[type] = value;
+    }
+  }
+  const serverDate = new Date(
+    `${obj.year}-${obj.month}-${obj.day}T${obj.hour}:${obj.minute}:${obj.second}Z`
+  );
+  return serverDate;
+}
+
+// Get current time in server timezone
+function getServerNow() {
+  return toServerTime(new Date());
+}
+
+// Get today's date in server timezone
+function getServerBaseDate() {
+  const serverNow = getServerNow();
+  const baseDate = new Date(serverNow);
+  baseDate.setUTCHours(0, 0, 0, 0);
+  const copy = new Date(baseDate);
+  copy.setUTCDate(copy.getUTCDate() + state.dayOffset);
+  return copy;
+}
+
+// Parse time on a UTC date (for server timezone calculations)
+function parseTimeUTC(baseDate, hhmm) {
+  const [hours, minutes] = hhmm.split(":").map(Number);
+  const date = new Date(baseDate);
+  date.setUTCHours(hours, minutes, 0, 0);
+  return date;
+}
+
+// Flatten events using UTC dates (server timezone)
+function flattenEventsUTC(baseDate) {
+  const rows = DAILY_SCHEDULE.map((entry) => {
+    const start = parseTimeUTC(baseDate, entry.time);
+    const durationMin = Number(entry.durationMin) || 20;
+    const end = new Date(start.getTime() + durationMin * 60000);
+    return {
+      name: entry.name,
+      category: entry.category || "general",
+      start,
+      end,
+      durationMin,
+      hhmm: entry.time
+    };
+  });
+
+  rows.sort((a, b) => a.start - b.start || a.name.localeCompare(b.name));
+  return rows;
 }
 
 function getBaseDate() {
@@ -145,11 +308,11 @@ function humanDuration(ms) {
 
 function findNextEvents(now, limit = 6) {
   const todayBase = new Date(now);
-  todayBase.setHours(0, 0, 0, 0);
+  todayBase.setUTCHours(0, 0, 0, 0);
   const tomorrowBase = new Date(todayBase);
-  tomorrowBase.setDate(tomorrowBase.getDate() + 1);
+  tomorrowBase.setUTCDate(tomorrowBase.getUTCDate() + 1);
 
-  const merged = flattenEvents(todayBase).concat(flattenEvents(tomorrowBase));
+  const merged = flattenEventsUTC(todayBase).concat(flattenEventsUTC(tomorrowBase));
   return merged.filter((event) => event.start >= now && eventMatchesFilter(event)).slice(0, limit);
 }
 
@@ -177,8 +340,10 @@ function formatDay(date) {
 }
 
 function renderHeader(now) {
-  const base = getBaseDate();
-  refs.dayDate.textContent = formatDay(base);
+  const base = getServerBaseDate();
+  const baseDate = new Date(base);
+  baseDate.setUTCHours(0, 0, 0, 0);
+  refs.dayDate.textContent = formatDay(baseDate);
 
   if (state.dayOffset === 0) {
     refs.dayLabel.textContent = "Today";
@@ -193,7 +358,8 @@ function renderHeader(now) {
 }
 
 function renderNextEvents(now, force = false) {
-  const next = findNextEvents(now, 6);
+  const serverNow = getServerNow();
+  const next = findNextEvents(serverNow, 6);
   const nextKey = next.map(eventKey).join("||");
   const renderedKey = renderedNextEvents.map(eventKey).join("||");
 
@@ -218,14 +384,14 @@ function renderNextEvents(now, force = false) {
   renderedNextEvents.forEach((event, idx) => {
     const countEl = cards[idx]?.querySelector(".timer-count");
     if (countEl) {
-      countEl.textContent = `In ${humanDuration(event.start - now)}`;
+      countEl.textContent = `In ${humanDuration(event.start - serverNow)}`;
     }
   });
 }
 
 function renderSchedule(now, force = false) {
-  const base = getBaseDate();
-  const rows = flattenEvents(base).filter(eventMatchesFilter);
+  const base = getServerBaseDate();
+  const rows = flattenEventsUTC(base).filter(eventMatchesFilter);
   const rowsKey = rows.map(eventKey).join("||");
   const renderedKey = renderedScheduleRows.map(eventKey).join("||");
 
@@ -247,6 +413,7 @@ function renderSchedule(now, force = false) {
 
   renderedScheduleRows = rows;
   const rowEls = refs.scheduleList.querySelectorAll(".schedule-item");
+  const serverNow = getServerNow();
   renderedScheduleRows.forEach((row, idx) => {
     const li = rowEls[idx];
     if (!li) {
@@ -254,14 +421,14 @@ function renderSchedule(now, force = false) {
     }
 
     const isTodayView = state.dayOffset === 0;
-    const isLive = isTodayView && now >= row.start && now < row.end;
+    const isLive = isTodayView && serverNow >= row.start && serverNow < row.end;
     li.classList.toggle("live", isLive);
 
     let statusText = "Passed";
     if (isLive) {
-      statusText = `Live (${humanDuration(row.end - now)} left)`;
-    } else if (row.start >= now || state.dayOffset !== 0) {
-      statusText = `In ${humanDuration(row.start - now)}`;
+      statusText = `Live (${humanDuration(row.end - serverNow)} left)`;
+    } else if (row.start >= serverNow || state.dayOffset !== 0) {
+      statusText = `In ${humanDuration(row.start - serverNow)}`;
     }
 
     const countEl = li.querySelector(".count");
@@ -292,6 +459,7 @@ function speakAlert(event, mode = "lead") {
   const utterance = new SpeechSynthesisUtterance(message);
   utterance.rate = 1;
   utterance.pitch = 1;
+  ensureBackgroundAudioUnlocked();
   window.speechSynthesis.cancel();
   window.speechSynthesis.speak(utterance);
 }
@@ -314,6 +482,7 @@ function testVoice() {
     return;
   }
 
+  ensureBackgroundAudioUnlocked();
   speakText(
     `${sampleEvent.name} starts in ${state.notifyLeadMin} minutes at ${sampleEvent.time}. Voice test.`
   );
@@ -324,6 +493,7 @@ function speakText(message) {
     return;
   }
 
+  ensureBackgroundAudioUnlocked();
   const utterance = new SpeechSynthesisUtterance(message);
   utterance.rate = 1;
   utterance.pitch = 1;
@@ -333,12 +503,12 @@ function speakText(message) {
 
 function findUpcomingAllEvents(now, limit = 24) {
   const todayBase = new Date(now);
-  todayBase.setHours(0, 0, 0, 0);
+  todayBase.setUTCHours(0, 0, 0, 0);
   const tomorrowBase = new Date(todayBase);
-  tomorrowBase.setDate(tomorrowBase.getDate() + 1);
+  tomorrowBase.setUTCDate(tomorrowBase.getUTCDate() + 1);
 
-  return flattenEvents(todayBase)
-    .concat(flattenEvents(tomorrowBase))
+  return flattenEventsUTC(todayBase)
+    .concat(flattenEventsUTC(tomorrowBase))
     .filter((event) => event.start >= now)
     .slice(0, limit);
 }
@@ -354,14 +524,15 @@ function maybeNotify(now) {
     return;
   }
 
+  const serverNow = getServerNow();
   const leadWindowMs = state.notifyLeadMin * 60000;
   const lateGraceMs = 15000;
-  const previousTickMs = state.lastTickMs ?? now.getTime() - 1100;
-  const upcoming = findUpcomingAllEvents(now, 24);
+  const previousTickMs = state.lastTickMs ?? serverNow.getTime() - 1100;
+  const upcoming = findUpcomingAllEvents(serverNow, 24);
 
   for (const event of upcoming) {
     const prevUntil = event.start.getTime() - previousTickMs;
-    const currentUntil = event.start.getTime() - now.getTime();
+    const currentUntil = event.start.getTime() - serverNow.getTime();
 
     const crossedLeadThreshold =
       prevUntil >= leadWindowMs && currentUntil <= leadWindowMs && currentUntil >= -lateGraceMs;
@@ -377,7 +548,7 @@ function maybeNotify(now) {
     }
   }
 
-  state.lastTickMs = now.getTime();
+  state.lastTickMs = serverNow.getTime();
 }
 
 async function loadScheduleJson() {
@@ -432,11 +603,31 @@ function bindEvents() {
   refs.voiceToggle.addEventListener("change", (event) => {
     state.voiceEnabled = event.target.checked;
     setVoiceChecklistEnabled(state.voiceEnabled);
+    if (state.voiceEnabled) {
+      ensureBackgroundAudioUnlocked();
+    }
+    storage.saveVoicePreference(state.voiceEnabled);
   });
 
   refs.testVoice.addEventListener("click", () => {
     testVoice();
   });
+
+  if (refs.enableAudioBtn) {
+    refs.enableAudioBtn.addEventListener("click", () => {
+      ensureBackgroundAudioUnlocked();
+      state.bgAudioEnabled = true;
+      try {
+        refs.enableAudioBtn.textContent = "Background audio enabled";
+        refs.enableAudioBtn.disabled = true;
+      } catch (e) {
+        // ignore
+      }
+      storage.saveBgAudioPreference(true);
+      // provide audible confirmation
+      speakText("Background audio enabled");
+    });
+  }
 
   refs.categoryFilter.addEventListener("change", (event) => {
     state.filter = event.target.value;
@@ -449,6 +640,10 @@ function bindEvents() {
 }
 
 async function init() {
+  // Load saved preferences
+  state.voiceEnabled = storage.loadVoicePreference();
+  state.bgAudioEnabled = storage.loadBgAudioPreference();
+  
   await loadScheduleJson();
   if (!DAILY_SCHEDULE.length) {
     return;
@@ -456,6 +651,17 @@ async function init() {
   buildFilterOptions();
   buildVoiceEventChecklist();
   setVoiceChecklistEnabled(state.voiceEnabled);
+  
+  // Restore voice toggle state from localStorage
+  refs.voiceToggle.checked = state.voiceEnabled;
+  
+  // Restore background audio button state from localStorage
+  if (state.bgAudioEnabled && refs.enableAudioBtn) {
+    refs.enableAudioBtn.textContent = "Background audio enabled";
+    refs.enableAudioBtn.disabled = true;
+    ensureBackgroundAudioUnlocked();
+  }
+  
   bindEvents();
   tick(true);
   setInterval(() => tick(false), 1000);
