@@ -560,6 +560,7 @@ function maybeNotify(now) {
   const serverNow = getServerNow();
   const leadWindowMs = state.notifyLeadMin * 60000;
   const lateGraceMs = 15000;
+  const startGraceMs = 5000; // 5 second grace window for start announcement
   const previousTickMs = state.lastTickMs ?? serverNow.getTime() - 1100;
   const upcoming = findUpcomingAllEvents(serverNow, 24);
 
@@ -567,6 +568,7 @@ function maybeNotify(now) {
     const prevUntil = event.start.getTime() - previousTickMs;
     const currentUntil = event.start.getTime() - serverNow.getTime();
 
+    // Check if we crossed the lead threshold
     const crossedLeadThreshold =
       prevUntil >= leadWindowMs && currentUntil <= leadWindowMs && currentUntil >= -lateGraceMs;
 
@@ -578,6 +580,20 @@ function maybeNotify(now) {
       state.alertedKeys.add(leadKey);
 
       speakAlert(event, "lead");
+    }
+
+    // Check if event is starting now (crossed start threshold)
+    const crossedStartThreshold =
+      prevUntil > 0 && currentUntil <= startGraceMs && currentUntil >= -lateGraceMs;
+
+    if (crossedStartThreshold) {
+      const startKey = `start:${event.name}:${event.start.getTime()}`;
+      if (state.alertedKeys.has(startKey)) {
+        continue;
+      }
+      state.alertedKeys.add(startKey);
+
+      speakAlert(event, "start");
     }
   }
 
