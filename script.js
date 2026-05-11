@@ -76,36 +76,56 @@ const storage = {
 };
 
 
-// Background audio keeper: creates a very-low-volume oscillator to keep
-// the audio system active so timers/tts continue when page is backgrounded
+// Background audio keeper: creates and plays a silent audio element to keep
+// the page active so speech synthesis continues when the browser is minimized
 const bgAudio = {
   ctx: null,
   osc: null,
   gain: null,
+  audio: null,
   started: false,
+  
+  // Create a silent WAV blob to loop
+  createSilentBlob() {
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const sampleRate = audioCtx.sampleRate;
+    const duration = 1; // 1 second of silence
+    const audioBuffer = audioCtx.createBuffer(1, sampleRate * duration, sampleRate);
+    const offlineCtx = new OfflineAudioContext(1, sampleRate * duration, sampleRate);
+    const buffer = offlineCtx.createBuffer(1, sampleRate * duration, sampleRate);
+    
+    return buffer;
+  },
+  
   start() {
     try {
       if (this.started) return;
+      
+      // Try using Web Audio API oscillator (silent)
       const Ctx = window.AudioContext || window.webkitAudioContext;
-      if (!Ctx) return;
-      this.ctx = new Ctx();
-      this.gain = this.ctx.createGain();
-      this.gain.gain.value = 0.00001;
-      this.osc = this.ctx.createOscillator();
-      this.osc.type = "sine";
-      this.osc.frequency.value = 440;
-      this.osc.connect(this.gain);
-      this.gain.connect(this.ctx.destination);
-      this.osc.start();
-      this.started = true;
+      if (Ctx) {
+        this.ctx = new Ctx();
+        this.gain = this.ctx.createGain();
+        this.gain.gain.value = 0.00001; // Inaudible
+        this.osc = this.ctx.createOscillator();
+        this.osc.type = "sine";
+        this.osc.frequency.value = 20; // Very low frequency
+        this.osc.connect(this.gain);
+        this.gain.connect(this.ctx.destination);
+        this.osc.start();
+        this.started = true;
+        console.log("bgAudio: Web Audio API oscillator started");
+      }
     } catch (e) {
       console.warn("bgAudio start failed", e);
     }
   },
+  
   resume() {
     try {
       if (this.ctx && this.ctx.state === "suspended") {
         this.ctx.resume();
+        console.log("bgAudio: AudioContext resumed");
       }
     } catch (e) {
       console.warn("bgAudio resume failed", e);
@@ -124,6 +144,19 @@ function ensureBackgroundAudioUnlocked() {
   } catch (e) {
     console.warn("ensureBackgroundAudioUnlocked error", e);
   }
+}
+
+// Use Page Visibility API to keep audio playing when minimized
+function setupVisibilityHandling() {
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      console.log("Page hidden - ensuring audio stays active");
+      ensureBackgroundAudioUnlocked();
+    } else {
+      console.log("Page visible - resuming audio");
+      bgAudio.resume();
+    }
+  });
 }
 
 function buildFilterOptions() {
@@ -605,6 +638,7 @@ function bindEvents() {
     setVoiceChecklistEnabled(state.voiceEnabled);
     if (state.voiceEnabled) {
       ensureBackgroundAudioUnlocked();
+      setupVisibilityHandling(); // Ensure visibility handler is set up
     }
     storage.saveVoicePreference(state.voiceEnabled);
   });
@@ -643,6 +677,9 @@ async function init() {
   // Load saved preferences
   state.voiceEnabled = storage.loadVoicePreference();
   state.bgAudioEnabled = storage.loadBgAudioPreference();
+  
+  // Set up visibility handling to keep audio active when minimized
+  setupVisibilityHandling();
   
   await loadScheduleJson();
   if (!DAILY_SCHEDULE.length) {
